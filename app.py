@@ -6,6 +6,42 @@ import pandas as pd
 import streamlit as st
 from scipy.stats import poisson
 
+# 中文球队别名；最终仍以当前数据源中的英文队名为准。
+TEAM_ALIASES = {
+    '阿森纳':'Arsenal','切尔西':'Chelsea','利物浦':'Liverpool','埃弗顿':'Everton',
+    '曼城':'Man City','曼联':'Man United','热刺':'Tottenham','纽卡':'Newcastle',
+    '纽卡斯尔':'Newcastle','维拉':'Aston Villa','阿斯顿维拉':'Aston Villa',
+    '布莱顿':'Brighton','西汉姆':'West Ham','西汉姆联':'West Ham',
+    '狼队':'Wolves','富勒姆':'Fulham','水晶宫':'Crystal Palace',
+    '伯恩茅斯':'Bournemouth','诺丁汉森林':"Nott'm Forest",'布伦特福德':'Brentford',
+    '利兹联':'Leeds','桑德兰':'Sunderland','伯恩利':'Burnley',
+    '皇马':'Real Madrid','皇家马德里':'Real Madrid','巴萨':'Barcelona',
+    '巴塞罗那':'Barcelona','马竞':'Ath Madrid','马德里竞技':'Ath Madrid',
+    '塞维利亚':'Sevilla','贝蒂斯':'Betis','皇家社会':'Sociedad',
+    '毕尔巴鄂':'Ath Bilbao','比利亚雷亚尔':'Villarreal','瓦伦西亚':'Valencia',
+    '赫塔费':'Getafe','奥萨苏纳':'Osasuna','塞尔塔':'Celta',
+    '拜仁':'Bayern Munich','拜仁慕尼黑':'Bayern Munich','多特蒙德':'Dortmund',
+    '莱比锡':'RB Leipzig','莱红牛':'RB Leipzig','勒沃库森':'Leverkusen',
+    '法兰克福':'Ein Frankfurt','斯图加特':'Stuttgart','门兴':"M'gladbach",
+    '沃尔夫斯堡':'Wolfsburg','弗赖堡':'Freiburg','不来梅':'Werder Bremen',
+    '国米':'Inter','国际米兰':'Inter','AC米兰':'Milan','米兰':'Milan',
+    '尤文':'Juventus','尤文图斯':'Juventus','那不勒斯':'Napoli',
+    '罗马':'Roma','拉齐奥':'Lazio','亚特兰大':'Atalanta',
+    '佛罗伦萨':'Fiorentina','博洛尼亚':'Bologna','都灵':'Torino',
+    '科莫':'Como','乌迪内斯':'Udinese','热那亚':'Genoa',
+    '巴黎':'Paris SG','巴黎圣日耳曼':'Paris SG','马赛':'Marseille',
+    '里昂':'Lyon','摩纳哥':'Monaco','里尔':'Lille','尼斯':'Nice',
+    '朗斯':'Lens','雷恩':'Rennes','斯特拉斯堡':'Strasbourg',
+}
+
+def resolve_team(name, available):
+    name = name.strip()
+    target = TEAM_ALIASES.get(name, name)
+    if target in available:
+        return target
+    matches = [t for t in available if t.casefold() == target.casefold()]
+    return matches[0] if len(matches) == 1 else None
+
 st.set_page_config(page_title='足球概率实验室', page_icon='⚽', layout='wide')
 st.title('⚽ 足球概率实验室')
 st.caption('独立泊松基线模型｜胜平负、体彩让球、历史滚动回测｜仅供研究，不保证命中率')
@@ -52,6 +88,27 @@ def probabilities(lh, la, handicap=-1):
     handicap_probs = [float(m[adj>0].sum()),float(m[adj==0].sum()),float(m[adj<0].sum())]
     scores = sorted([(f'{i}-{j}',float(m[i,j])) for i in range(8) for j in range(8)],key=lambda x:-x[1])[:8]
     return standard, handicap_probs, scores
+
+def extra_markets(lh, la):
+    k = np.arange(15)
+    pm = np.outer(poisson.pmf(k, lh), poisson.pmf(k, la))
+    pm /= pm.sum()
+    goals = np.add.outer(k, k)
+    goal_probs = [float(pm[goals == i].sum()) for i in range(7)]
+    goal_probs.append(float(pm[goals >= 7].sum()))
+    # 假设两半场进球独立且期望值各占一半，非真实半场统计模型。
+    half = np.outer(poisson.pmf(k, lh / 2), poisson.pmf(k, la / 2))
+    half /= half.sum()
+    names = ['胜', '平', '负']
+    probs = {f'{a}{b}': 0.0 for a in names for b in names}
+    for i in range(15):
+        for j in range(15):
+            first = 0 if i > j else (1 if i == j else 2)
+            for x in range(15):
+                for y in range(15):
+                    full = 0 if i + x > j + y else (1 if i + x == j + y else 2)
+                    probs[names[first] + names[full]] += float(half[i,j] * half[x,y])
+    return goal_probs, probs
 
 leagues={'英超':'E0','英冠':'E1','西甲':'SP1','意甲':'I1','德甲':'D1','法甲':'F1'}
 league_name = st.selectbox('联赛',list(leagues))
@@ -119,39 +176,60 @@ with tab2:
 st.caption('数据：football-data.co.uk 公开CSV。遵守数据来源使用条款。此版本只支持同一联赛内球队。')
 
 st.header("🎯 体彩每日分析 · 批量预测")
-st.caption("当前支持所选联赛及赛季的球队；每日体彩官方赛程尚未接入。不会自动生成赛事或盘口。")
-st.write("输入比赛，每行一场，格式：001 Arsenal vs Chelsea -1（球队名使用上方下拉框中的英文名称）")
-matches = st.text_area("比赛列表", placeholder="001 Arsenal vs Chelsea -1\n002 Liverpool vs Everton +1", height=150)
+st.caption("支持中文球队简称和六个已接入联赛；自动按球队所属联赛匹配。跨联赛、日职、韩K联等暂不计算。")
+st.write("每行一场，例如：001 阿森纳vs切尔西 -1（让球可省略，默认0）")
+matches = st.text_area("比赛列表", placeholder="001 阿森纳vs切尔西 -1\n002 皇马vs巴萨 +1\n003 拜仁vs多特蒙德 -2", height=150)
 if st.button("分析输入的比赛", type="primary"):
     import re
     rows = []
+    datasets = {}
+    for label, code in leagues.items():
+        try:
+            df = get_data(code, season)
+            if len(df) >= 20:
+                datasets[label] = (df, set(df.HomeTeam).union(df.AwayTeam))
+        except Exception:
+            pass
     for line in matches.splitlines():
         line = line.strip()
         if not line:
             continue
-        match = re.fullmatch(r"(?:(\d{3})\s+)?(.+?)\s+vs\s+(.+?)\s+([+-]\d+)", line, flags=re.I)
+        match = re.fullmatch(r"(?:(\d{3})\s+)?(.+?)\s*(?:vs|VS|对阵|对)\s*(.+?)(?:\s+([+-]\d+))?\s*", line, flags=re.I)
         if not match:
-            rows.append({'比赛':line,'状态':'格式不正确，请检查 vs 和让球数'})
+            rows.append({'比赛':line, '状态':'格式错误：示例 001 阿森纳vs切尔西 -1'})
             continue
         number, home_name, away_name, hcap = match.groups()
-        home_name, away_name, hcap = home_name.strip(), away_name.strip(), int(hcap)
-        if home_name not in teams or away_name not in teams or home_name == away_name:
-            rows.append({'比赛':line,'状态':'球队不在当前联赛数据中，或主客队相同'})
+        hcap = int(hcap or 0)
+        choices = []
+        for label, (df, available) in datasets.items():
+            h = resolve_team(home_name, available)
+            a = resolve_team(away_name, available)
+            if h and a and h != a:
+                choices.append((label, df, h, a))
+        if not choices:
+            rows.append({'比赛':line,'状态':'未匹配到同一已接入联赛的两支球队；请核对名称和赛季'})
             continue
-        rates = fit_rates(data, home_name, away_name)
+        label, df, home, away = choices[0]
+        rates = fit_rates(df, home, away)
         if rates is None:
-            rows.append({'比赛':line,'状态':'历史样本不足'})
+            rows.append({'比赛':line,'联赛':label,'状态':'历史样本不足'})
             continue
         std, hcp, scores = probabilities(*rates, hcap)
-        rows.append({'比赛':f'{number or "---"} {home_name} vs {away_name}', '让球':f'{hcap:+d}',
-                     '胜':f'{std[0]:.1%}', '平':f'{std[1]:.1%}', '负':f'{std[2]:.1%}',
-                     '让胜':f'{hcp[0]:.1%}', '让平':f'{hcp[1]:.1%}', '让负':f'{hcp[2]:.1%}',
-                     '参考比分':scores[0][0], '状态':'已计算（历史基线）'})
+        goal_probs, half_full = extra_markets(*rates)
+        best_hf = sorted(half_full.items(), key=lambda x:-x[1])[:3]
+        rows.append({'比赛':f'{number or "---"} {home_name.strip()} vs {away_name.strip()}',
+                     '联赛':label,'让球':f'{hcap:+d}',
+                     '胜':f'{std[0]:.1%}','平':f'{std[1]:.1%}','负':f'{std[2]:.1%}',
+                     '让胜':f'{hcp[0]:.1%}','让平':f'{hcp[1]:.1%}','让负':f'{hcp[2]:.1%}',
+                     '进球数概率': ' / '.join(f'{i if i < 7 else "7+"}球 {p:.0%}' for i,p in enumerate(goal_probs)),
+                     '比分前三': '、'.join(f'{sc}({p:.1%})' for sc,p in scores[:3]),
+                     '半全场前三': '、'.join(f'{sc}({p:.1%})' for sc,p in best_hf),
+                     '状态':'历史基线估算'})
     if rows:
         output = pd.DataFrame(rows)
         st.dataframe(output, hide_index=True, use_container_width=True)
-        st.download_button('下载分析结果 CSV', output.to_csv(index=False).encode('utf-8-sig'),
-                           'daily_analysis.csv', 'text/csv')
+        st.download_button('下载分析结果 CSV',output.to_csv(index=False).encode('utf-8-sig'),
+                           'daily_analysis.csv','text/csv')
     else:
         st.info('请先输入比赛。')
-st.info('本模块只使用历史联赛数据，不包含实时首发、伤停或跨联赛实力校正。概率不保证结果。')
+st.info('仅历史联赛数据；未接入官方体彩赔率、实时首发和伤停。半全场基于半场独立泊松近似，不是已验证的半场预测模型。')

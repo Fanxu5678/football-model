@@ -117,3 +117,17 @@ with tab2:
             st.dataframe(result.drop(columns=['Brier']),hide_index=True,use_container_width=True)
             st.download_button('下载回测CSV',result.to_csv(index=False).encode('utf-8-sig'),'backtest.csv','text/csv')
 st.caption('数据：football-data.co.uk 公开CSV。遵守数据来源使用条款。此版本只支持同一联赛内球队。')
+st.header("🎯 体彩每日分析")
+st.write("输入今天的体彩比赛，每行一场")
+matches = st.text_area(
+    "体彩比赛列表",
+    placeholder="001 阿森纳 vs 切尔西\n002 曼城 vs 利物浦",
+    height=180
+)
+if matches:
+    st.write("已输入比赛：")
+    for match in matches.splitlines():
+        if match.strip():
+            st.write(match)
+
+            

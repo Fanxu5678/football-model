@@ -117,17 +117,41 @@ with tab2:
             st.dataframe(result.drop(columns=['Brier']),hide_index=True,use_container_width=True)
             st.download_button('下载回测CSV',result.to_csv(index=False).encode('utf-8-sig'),'backtest.csv','text/csv')
 st.caption('数据：football-data.co.uk 公开CSV。遵守数据来源使用条款。此版本只支持同一联赛内球队。')
-st.header("🎯 体彩每日分析")
-st.write("输入今天的体彩比赛，每行一场")
-matches = st.text_area(
-    "体彩比赛列表",
-    placeholder="001 阿森纳 vs 切尔西\n002 曼城 vs 利物浦",
-    height=180
-)
-if matches:
-    st.write("已输入比赛：")
-    for match in matches.splitlines():
-        if match.strip():
-            st.write(match)
 
-            
+st.header("🎯 体彩每日分析 · 批量预测")
+st.caption("当前支持所选联赛及赛季的球队；每日体彩官方赛程尚未接入。不会自动生成赛事或盘口。")
+st.write("输入比赛，每行一场，格式：001 Arsenal vs Chelsea -1（球队名使用上方下拉框中的英文名称）")
+matches = st.text_area("比赛列表", placeholder="001 Arsenal vs Chelsea -1\n002 Liverpool vs Everton +1", height=150)
+if st.button("分析输入的比赛", type="primary"):
+    import re
+    rows = []
+    for line in matches.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = re.fullmatch(r"(?:(\d{3})\s+)?(.+?)\s+vs\s+(.+?)\s+([+-]\d+)", line, flags=re.I)
+        if not match:
+            rows.append({'比赛':line,'状态':'格式不正确，请检查 vs 和让球数'})
+            continue
+        number, home_name, away_name, hcap = match.groups()
+        home_name, away_name, hcap = home_name.strip(), away_name.strip(), int(hcap)
+        if home_name not in teams or away_name not in teams or home_name == away_name:
+            rows.append({'比赛':line,'状态':'球队不在当前联赛数据中，或主客队相同'})
+            continue
+        rates = fit_rates(data, home_name, away_name)
+        if rates is None:
+            rows.append({'比赛':line,'状态':'历史样本不足'})
+            continue
+        std, hcp, scores = probabilities(*rates, hcap)
+        rows.append({'比赛':f'{number or "---"} {home_name} vs {away_name}', '让球':f'{hcap:+d}',
+                     '胜':f'{std[0]:.1%}', '平':f'{std[1]:.1%}', '负':f'{std[2]:.1%}',
+                     '让胜':f'{hcp[0]:.1%}', '让平':f'{hcp[1]:.1%}', '让负':f'{hcp[2]:.1%}',
+                     '参考比分':scores[0][0], '状态':'已计算（历史基线）'})
+    if rows:
+        output = pd.DataFrame(rows)
+        st.dataframe(output, hide_index=True, use_container_width=True)
+        st.download_button('下载分析结果 CSV', output.to_csv(index=False).encode('utf-8-sig'),
+                           'daily_analysis.csv', 'text/csv')
+    else:
+        st.info('请先输入比赛。')
+st.info('本模块只使用历史联赛数据，不包含实时首发、伤停或跨联赛实力校正。概率不保证结果。')
